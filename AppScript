@@ -1,0 +1,308 @@
+// Add a custom menu when the spreadsheet opens
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('📅 Calendar Access')
+      .addItem('🔑 Add Users to Calendars', 'addUsersToResourceCalendars')
+      .addItem('🗑️ Remove Users from Calendars', 'removeUserFromResourceCalendars')
+      .addSeparator()
+      .addItem('ℹ️ Show Instructions', 'showInstructions')
+      .addToUi();
+}
+
+// Function to show instructions
+function showInstructions() {
+  const ui = SpreadsheetApp.getUi();
+  const instructions = 
+    'Instructions for Calendar Access Management:\n\n' +
+    'Spreadsheet Format:\n' +
+    'Column A: Calendar IDs\n' +
+    'Column B: Email Addresses\n' +
+    'Column C: Roles (for adding users only)\n' +
+    'Column D: Status Updates\n\n' +
+    'Available Roles:\n' +
+    '- reader: Can view event details\n' +
+    '- freeBusyReader: Can only see free/busy status\n' +
+    '- writer: Can modify events\n' +
+    '- owner: Full access\n\n' +
+    'Notes:\n' +
+    '- The script will process each email with each calendar ID\n' +
+    '- Status updates will appear in Column D\n' +
+    '- Headers should be in row 1\n' +
+    '- Empty rows will be skipped';
+  
+  ui.alert('Calendar Access Management Instructions', instructions, ui.ButtonSet.OK);
+}
+
+// Function to update status with immediate refresh
+function updateStatus(sheet, row, message, background, isBold = false) {
+  const cell = sheet.getRange(row, 4); // Column D
+  cell.setValue(message)
+      .setBackground(background)
+      .setFontWeight(isBold ? 'bold' : 'normal')
+      .setHorizontalAlignment('left')
+      .setWrap(true);
+  SpreadsheetApp.flush(); // Force immediate update
+}
+
+// Function to update progress header with immediate refresh
+function updateProgressHeader(sheet, current, total) {
+  const percentage = Math.round((current / total) * 100);
+  const cell = sheet.getRange('D1');
+  cell.setValue(`Progress: \${current}/\${total} operations (\${percentage}%)`)
+      .setBackground('#f3f3f3')
+      .setFontWeight('bold')
+      .setHorizontalAlignment('center');
+  SpreadsheetApp.flush(); // Force immediate update
+}
+
+// Function to remove users from calendars
+function removeUserFromResourceCalendars() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getActiveSheet();
+  const lastRow = sheet.getLastRow();
+
+  // Check if sheet is empty
+  if (lastRow <= 1) {
+    SpreadsheetApp.getUi().alert('Error', 'No data found in the spreadsheet. Please add data starting from row 2.', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+
+  // Check if headers exist
+  const headers = sheet.getRange('A1:D1').getValues()[0];
+  if (!headers[0] || !headers[1]) {
+    SpreadsheetApp.getUi().alert('Error', 'Missing required headers in row 1. Please ensure Column A has "Calendar ID" and Column B has "Email".', SpreadsheetApp.getUi().ButtonSet.OK);
+    return;
+  }
+  
+  const calendarIds = [...new Set(sheet.getRange('A2:A' + lastRow).getValues().flat().filter(id => id !== ''))];
+  const userEmails = [...new Set(sheet.getRange('B2:B' + lastRow).getValues().flat().filter(email => email !== ''))];
+  
+  // Initialize status column
+  updateStatus(sheet, 1, 'Status', '#f3f3f3', true);
+  
+  // Clear existing status
+  if (lastRow > 1) {
+    sheet.getRange('D2:D' + lastRow).clearContent();
+    SpreadsheetApp.flush();
+  }
+
+  const totalOperations = calendarIds.length * userEmails.length;
+  
+  // Pre-populate status cells
+  for (let i = 0; i < totalOperations; i++) {
+    updateStatus(sheet, i + 2, 'Pending...', '#fff2cc');
+  }
+
+  let currentRow = 2;
+  let currentOperation = 0;
+
+  // Process each combination
+  calendarIds.forEach(calendarId => {
+    userEmails.forEach(userEmail => {
+      currentOperation++;
+      updateProgressHeader(sheet, currentOperation, totalOperations);
+      
+      // Update to Processing
+      updateStatus(sheet, currentRow, 'Processing...', '#fff2cc', true);
+
+      try {
+        const aclRules = Calendar.Acl.list(calendarId);
+        let userRemoved = false;
+        
+        if (aclRules.items && aclRules.items.length > 0) {
+            aclRules.items.forEach(function(rule) {
+                if (rule.scope && rule.scope.value === userEmail) {
+                    // For regular calendars, the rule ID is typically 'user:' + email
+                    const ruleId = 'user:' + userEmail;
+                    try {
+                        Calendar.Acl.remove(calendarId, ruleId);
+                        userRemoved = true;
+                    } catch (removeError) {
+                        // If the first attempt fails, try with the rule.id from the API
+                        try {
+                            Calendar.Acl.remove(calendarId, rule.id);
+                            userRemoved = true;
+                        } catch (secondError) {
+                            throw new Error(`Failed to remove with both ID formats. Error: \${secondError.toString()}`);
+                        }
+                    }
+                }
+            });
+        }
+        
+        if (userRemoved) {
+            updateStatus(
+                sheet, 
+                currentRow,
+                '✅ Successfully removed user ' + userEmail + ' from ' + calendarId + ' - ' + new Date().toLocaleString(),
+                '#d9ead3'
+            );
+        } else {
+            updateStatus(
+                sheet,
+                currentRow,
+                'ℹ️ No access found for user ' + userEmail + ' in ' + calendarId + ' - ' + new Date().toLocaleString(),
+                '#f3f3f3'
+            );
+        }
+        
+      } catch (error) {
+        updateStatus(
+          sheet,
+          currentRow,
+          '❌ Error: ' + error.toString() + ' - ' + new Date().toLocaleString(),
+          '#f4cccc'
+        );
+      }
+      
+      Utilities.sleep(100);
+      currentRow++;
+    });
+  });
+
+  // Update completion status
+  updateStatus(
+    sheet,
+    1,
+    '✅ Completed: ' + currentOperation + ' operations processed',
+    '#d9ead3',
+    true
+  );
+}
+
+
+// Function to add users to calendars
+function addUsersToResourceCalendars() {
+  try {
+    const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = spreadsheet.getActiveSheet();
+    const lastRow = sheet.getLastRow();
+
+    // Check if sheet is empty
+    if (lastRow <= 1) {
+      SpreadsheetApp.getUi().alert('Error', 'No data found in the spreadsheet. Please add data starting from row 2.', SpreadsheetApp.getUi().ButtonSet.OK);
+      return;
+    }
+
+    // Check if headers exist
+    const headers = sheet.getRange('A1:D1').getValues()[0];
+    if (!headers[0] || !headers[1]) {
+      SpreadsheetApp.getUi().alert('Error', 'Missing required headers in row 1. Please ensure Column A has "Calendar ID" and Column B has "Email".', SpreadsheetApp.getUi().ButtonSet.OK);
+      return;
+    }
+
+    const dataRange = sheet.getDataRange();
+    const values = dataRange.getValues();
+    
+    const calendarIds = [...new Set(values.slice(1).map(row => row[0]).filter(id => id !== ''))];
+    const users = [...new Set(values.slice(1)
+      .filter(row => row[1] !== '')
+      .map(row => ({
+        email: row[1],
+        role: validateRole(row[2])
+      })))];
+    
+    if (calendarIds.length === 0 || users.length === 0) {
+      SpreadsheetApp.getUi().alert('Error', 'No valid calendar IDs or users found in spreadsheet.');
+      return;
+    }
+
+    // Initialize status column
+    updateStatus(sheet, 1, 'Status', '#f3f3f3', true);
+    
+    // Clear existing status
+    if (lastRow > 1) {
+      sheet.getRange('D2:D' + lastRow).clearContent();
+      SpreadsheetApp.flush();
+    }
+
+    const totalOperations = calendarIds.length * users.length;
+    
+    // Pre-populate status cells
+    for (let i = 0; i < totalOperations; i++) {
+      updateStatus(sheet, i + 2, 'Pending...', '#fff2cc');
+    }
+
+    let currentRow = 2;
+    let currentOperation = 0;
+
+    // Process each combination
+    calendarIds.forEach(calendarId => {
+      users.forEach(user => {
+        currentOperation++;
+        updateProgressHeader(sheet, currentOperation, totalOperations);
+        
+        // Update to Processing
+        updateStatus(sheet, currentRow, 'Processing...', '#fff2cc', true);
+
+        try {
+          Calendar.Acl.insert(
+            {
+              scope: {
+                type: 'user',
+                value: user.email
+              },
+              role: user.role
+            },
+            calendarId,
+            { sendNotifications: false }
+          );
+          
+          updateStatus(
+            sheet,
+            currentRow,
+            '✅ Successfully added user ' + user.email + ' to ' + calendarId + 
+            ' with role ' + user.role + ' - ' + new Date().toLocaleString(),
+            '#d9ead3'
+          );
+          
+        } catch (err) {
+          updateStatus(
+            sheet,
+            currentRow,
+            '❌ Error: ' + err.toString() + ' - ' + new Date().toLocaleString(),
+            '#f4cccc'
+          );
+        }
+
+        Utilities.sleep(100);
+        currentRow++;
+      });
+    });
+
+    // Update completion status
+    updateStatus(
+      sheet,
+      1,
+      '✅ Completed: ' + currentOperation + ' operations processed',
+      '#d9ead3',
+      true
+    );
+    
+  } catch (err) {
+    Logger.log('Error: ' + err.message);
+    SpreadsheetApp.getUi().alert('Error', 'An error occurred: ' + err.message);
+  }
+}
+
+// Helper function to validate and normalize roles
+function validateRole(role) {
+  // Convert to lowercase and remove any extra spaces
+  const normalizedRole = (role || '').toString().toLowerCase().trim();
+  
+  // Define valid roles
+  const validRoles = {
+    'reader': 'reader',
+    'freebusyreader': 'freeBusyReader',
+    'writer': 'writer',
+    'owner': 'owner',
+    // Add common variations
+    'free busy reader': 'freeBusyReader',
+    'freebusy': 'freeBusyReader',
+    'read': 'reader',
+    'write': 'writer'
+  };
+
+  // Return the validated role or default to 'reader'
+  return validRoles[normalizedRole] || 'reader';
+}
