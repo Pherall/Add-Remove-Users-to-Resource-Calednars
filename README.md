@@ -119,6 +119,18 @@ The first row should contain headers:
 - Successful operations are marked with green background
 - Informational messages use a neutral background
 
+## 🔒 Security Notes
+
+- This script requires authorization to:
+  - Access and modify Google Calendar resources
+  - Access and modify Google Sheets
+  - Access Admin Directory API
+- No sensitive information is stored in the script
+- Authorization is handled through Google's OAuth2 system
+- Users must have appropriate Google Workspace permissions to use this script
+- Email notifications for calendar changes are disabled by default
+
+
 ## 🤝 Contributing
 
 Feel free to submit issues and enhancement requests!
